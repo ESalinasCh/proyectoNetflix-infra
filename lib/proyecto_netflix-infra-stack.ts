@@ -215,6 +215,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
 
     moviesTable.grantReadWriteData(triggerTranscodeFn);
     moviesTable.grantReadWriteData(transcodeCallbackFn);
+    videoAssetsTable.grantReadWriteData(triggerTranscodeFn);
     videoAssetsTable.grantReadWriteData(transcodeCallbackFn);
 
     // S3 ObjectCreated Event notification to Lambda
