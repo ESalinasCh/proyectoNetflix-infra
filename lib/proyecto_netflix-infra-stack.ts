@@ -9,6 +9,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class ProyectoNetflixInfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -111,6 +112,13 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
         ignorePublicAcls: false,
         restrictPublicBuckets: false,
       }),
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.GET],
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*'],
+        },
+      ],
     });
 
     // Shared environment variables mapping table names
@@ -192,6 +200,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
 
     // Streaming
     moviesTable.grantReadData(createStreamSessionFn);
+    videoAssetsTable.grantReadData(createStreamSessionFn);
     streamSessionsTable.grantWriteData(createStreamSessionFn);
     streamSessionsTable.grantReadData(getStreamSessionFn);
     streamSessionsTable.grantReadWriteData(endStreamSessionFn);
@@ -217,6 +226,27 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantReadWriteData(transcodeCallbackFn);
     videoAssetsTable.grantReadWriteData(triggerTranscodeFn);
     videoAssetsTable.grantReadWriteData(transcodeCallbackFn);
+
+    // MediaConvert IAM Role
+    const mediaConvertRole = new iam.Role(this, 'MediaConvertRole', {
+      assumedBy: new iam.ServicePrincipal('mediaconvert.amazonaws.com'),
+      description: 'IAM role for MediaConvert to access S3 buckets for video transcoding',
+    });
+
+    rawVideosBucket.grantRead(mediaConvertRole);
+    transcodedVideosBucket.grantReadWrite(mediaConvertRole);
+
+    // PassRole permission for triggerTranscodeFn to delegate the transcode role
+    mediaConvertRole.grantPassRole(triggerTranscodeFn.grantPrincipal);
+
+    // MediaConvert API permissions for triggerTranscodeFn
+    triggerTranscodeFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['mediaconvert:*'],
+      resources: ['*'],
+    }));
+
+    // Expose MediaConvert Role ARN to triggerTranscodeFn environment
+    triggerTranscodeFn.addEnvironment('MEDIACONVERT_ROLE_ARN', mediaConvertRole.roleArn);
 
     // S3 ObjectCreated Event notification to Lambda
     rawVideosBucket.addEventNotification(
