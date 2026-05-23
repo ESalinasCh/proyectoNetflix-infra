@@ -8,4 +8,4 @@ node_modules
 cdk.out
 
 # Local Lambda dependencies
-lambda/node_modules/
+app-code/node_modules/

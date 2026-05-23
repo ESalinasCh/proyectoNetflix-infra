@@ -137,12 +137,12 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     // 2. LAMBDA FUNCTIONS DEFINITIONS (17 handlers)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    // Helper function to declare Lambda handlers pointing to the local lambda folder
+    // Helper function to declare Lambda handlers pointing to the app-code submodule
     const createLambda = (id: string, serviceName: string, fileName: string) => {
       const fn = new NodejsFunction(this, id, {
-        entry: path.join(__dirname, `../lambda/${serviceName}/${fileName}.ts`),
-        projectRoot: path.join(__dirname, '../lambda'),
-        depsLockFilePath: path.join(__dirname, '../lambda/package-lock.json'),
+        entry: path.join(__dirname, `../app-code/src/${serviceName}/${fileName}.ts`),
+        projectRoot: path.join(__dirname, '../app-code'),
+        depsLockFilePath: path.join(__dirname, '../app-code/package-lock.json'),
         runtime: lambda.Runtime.NODEJS_18_X,
         handler: 'handler',
         environment: sharedEnv,
