@@ -1,14 +1,47 @@
-# Welcome to your CDK TypeScript project
+# Netflix Clone - Infrastructure Setup
 
-This is a blank project for CDK development with TypeScript.
+Este repositorio contiene la definición de infraestructura como código (IaC) utilizando AWS CDK y TypeScript. El código de la aplicación y las Lambdas se integra mediante **Git Submodules**.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## 🚀 Guía de Despliegue Rápido
 
-## Useful commands
+### 1. Clonar el repositorio (con submódulos)
+Descarga la infraestructura y el código de la aplicación en un solo paso:
+```bash
+git clone --recursive https://github.com/ESalinasCh/proyectoNetflix-infra.git
+cd proyectoNetflix-infra
+```
+*Si clonaste el repositorio sin el flag `--recursive`, descarga el submódulo manualmente corriendo:*
+```bash
+git submodule update --init --recursive
+```
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+### 2. Instalar dependencias
+Debes instalar los paquetes en la raíz del proyecto y en el submódulo del código de la app:
+```bash
+# Dependencias de Infraestructura (Raíz)
+npm install
+
+# Dependencias de Handlers (Submódulo)
+cd app-code
+npm install
+cd ..
+```
+
+### 3. Configuración y Despliegue a AWS
+Asegúrate de configurar tus credenciales de AWS antes de continuar (`aws configure`).
+
+```bash
+# Preparar recursos del CDK (Solo la primera vez)
+npx cdk bootstrap
+
+# Desplegar los recursos a AWS
+npx cdk deploy
+```
+
+---
+
+## 🛠️ Comandos Útiles
+
+* `npx cdk synth` — Emite la plantilla sintetizada de CloudFormation.
+* `npx cdk diff` — Compara los recursos locales con lo desplegado.
+* `git submodule update --remote` — Trae los últimos cambios del código de la aplicación.
