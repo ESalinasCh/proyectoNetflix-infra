@@ -440,12 +440,12 @@ El proyecto implementa múltiples conceptos de computación en la nube:
 
 # 👥 Integrantes
 
-| Nombre       | Rol                      |
-| ------------ | ------------------------ |
-| Integrante 1 | Infrastructure / Backend |
-| Integrante 2 | Backend / APIs           |
-| Integrante 3 | Cloud Architecture       |
-| Integrante 4 | DevOps / Testing         |
+| Name | Role |
+|------|------|
+| Edward Salinas | Co-author |
+| Richard Berna | Co-author |
+| Jorge Siles | Co-author |
+| Estiven Salinas | Co-author |
 
 ---
 
