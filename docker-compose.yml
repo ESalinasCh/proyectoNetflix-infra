@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  aws-emulator:
+    image: floci/floci:latest
+    container_name: netflix-aws-emulator
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,dynamodb,lambda,apigateway,iam,events
+      - DEFAULT_REGION=us-east-1
+    volumes:
+      - ./local-data:/app/data

@@ -1,0 +1,4 @@
+[submodule "app-code"]
+	path = app-code
+	url = https://github.com/edwardsalinas/proyectoNetflix.git
+	branch = feature/backend-implementation-smithy-fxied

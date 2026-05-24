@@ -5,6 +5,11 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class ProyectoNetflixInfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -91,6 +96,31 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // S3 Buckets for video ingestion and streaming
+    const rawVideosBucket = new s3.Bucket(this, 'RawVideosBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    const transcodedVideosBucket = new s3.Bucket(this, 'TranscodedVideosBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      publicReadAccess: true,
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: false,
+        blockPublicPolicy: false,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: false,
+      }),
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.GET],
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*'],
+        },
+      ],
+    });
+
     // Shared environment variables mapping table names
     const sharedEnv = {
       TABLE_MOVIES: moviesTable.tableName,
@@ -99,18 +129,20 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       TABLE_USER_LISTS: userListsTable.tableName,
       TABLE_WATCH_HISTORY: watchHistoryTable.tableName,
       TABLE_STREAM_SESSIONS: streamSessionsTable.tableName,
+      BUCKET_RAW_VIDEOS: rawVideosBucket.bucketName,
+      BUCKET_TRANSCODED_VIDEOS: transcodedVideosBucket.bucketName,
     };
 
     // ─────────────────────────────────────────────────────────────────────────────
     // 2. LAMBDA FUNCTIONS DEFINITIONS (17 handlers)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    // Helper function to declare Lambda handlers pointing to the App workspace
+    // Helper function to declare Lambda handlers pointing to the app-code submodule
     const createLambda = (id: string, serviceName: string, fileName: string) => {
       const fn = new NodejsFunction(this, id, {
-        entry: path.join(__dirname, `../../proyectoNetflix/src/${serviceName}/${fileName}.ts`),
-        projectRoot: path.join(__dirname, '../../proyectoNetflix'),
-        depsLockFilePath: path.join(__dirname, '../../proyectoNetflix/package-lock.json'),
+        entry: path.join(__dirname, `../app-code/src/${serviceName}/${fileName}.ts`),
+        projectRoot: path.join(__dirname, '../app-code'),
+        depsLockFilePath: path.join(__dirname, '../app-code/package-lock.json'),
         runtime: lambda.Runtime.NODEJS_18_X,
         handler: 'handler',
         environment: sharedEnv,
@@ -139,6 +171,8 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const createStreamSessionFn = createLambda('CreateStreamSessionFn', 'streaming', 'createStreamSession');
     const getStreamSessionFn = createLambda('GetStreamSessionFn', 'streaming', 'getStreamSession');
     const endStreamSessionFn = createLambda('EndStreamSessionFn', 'streaming', 'endStreamSession');
+    const triggerTranscodeFn = createLambda('TriggerTranscodeFn', 'streaming', 'triggerTranscode');
+    const transcodeCallbackFn = createLambda('TranscodeCallbackFn', 'streaming', 'transcodeCallback');
 
     // User microservice
     const getUserListFn = createLambda('GetUserListFn', 'user', 'getUserList');
@@ -166,6 +200,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
 
     // Streaming
     moviesTable.grantReadData(createStreamSessionFn);
+    videoAssetsTable.grantReadData(createStreamSessionFn);
     streamSessionsTable.grantWriteData(createStreamSessionFn);
     streamSessionsTable.grantReadData(getStreamSessionFn);
     streamSessionsTable.grantReadWriteData(endStreamSessionFn);
@@ -181,6 +216,56 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantReadData(updateWatchProgressFn);
     watchHistoryTable.grantWriteData(updateWatchProgressFn);
     watchHistoryTable.grantReadWriteData(deleteWatchHistoryFn);
+
+    // VOD Ingestion Pipeline Permissions and Triggers
+    rawVideosBucket.grantReadWrite(triggerTranscodeFn);
+    transcodedVideosBucket.grantReadWrite(triggerTranscodeFn);
+    transcodedVideosBucket.grantReadWrite(transcodeCallbackFn);
+
+    moviesTable.grantReadWriteData(triggerTranscodeFn);
+    moviesTable.grantReadWriteData(transcodeCallbackFn);
+    videoAssetsTable.grantReadWriteData(triggerTranscodeFn);
+    videoAssetsTable.grantReadWriteData(transcodeCallbackFn);
+
+    // MediaConvert IAM Role
+    const mediaConvertRole = new iam.Role(this, 'MediaConvertRole', {
+      assumedBy: new iam.ServicePrincipal('mediaconvert.amazonaws.com'),
+      description: 'IAM role for MediaConvert to access S3 buckets for video transcoding',
+    });
+
+    rawVideosBucket.grantRead(mediaConvertRole);
+    transcodedVideosBucket.grantReadWrite(mediaConvertRole);
+
+    // PassRole permission for triggerTranscodeFn to delegate the transcode role
+    mediaConvertRole.grantPassRole(triggerTranscodeFn.grantPrincipal);
+
+    // MediaConvert API permissions for triggerTranscodeFn
+    triggerTranscodeFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['mediaconvert:*'],
+      resources: ['*'],
+    }));
+
+    // Expose MediaConvert Role ARN to triggerTranscodeFn environment
+    triggerTranscodeFn.addEnvironment('MEDIACONVERT_ROLE_ARN', mediaConvertRole.roleArn);
+
+    // S3 ObjectCreated Event notification to Lambda
+    rawVideosBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(triggerTranscodeFn),
+      { suffix: '.mp4' }
+    );
+
+    // EventBridge Rule for Elemental MediaConvert status callbacks
+    const mediaConvertRule = new events.Rule(this, 'MediaConvertRule', {
+      eventPattern: {
+        source: ['aws.mediaconvert'],
+        detailType: ['MediaConvert Job State Change'],
+        detail: {
+          status: ['COMPLETE', 'ERROR']
+        }
+      }
+    });
+    mediaConvertRule.addTarget(new targets.LambdaFunction(transcodeCallbackFn));
 
     // ─────────────────────────────────────────────────────────────────────────────
     // 4. API GATEWAY ROUTING DEFINITIONS
