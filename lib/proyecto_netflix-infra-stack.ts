@@ -10,6 +10,11 @@ import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as opensearch from 'aws-cdk-lib/aws-opensearchservice';
+import * as fs from 'fs';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 export class ProyectoNetflixInfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -121,6 +126,61 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       ],
     });
 
+    // Amazon OpenSearch Service Domain for text search
+    const searchDomain = new opensearch.Domain(this, 'SearchDomain', {
+      version: opensearch.EngineVersion.OPENSEARCH_2_11,
+      capacity: {
+        dataNodeInstanceType: 't3.medium.search',
+        dataNodes: 1,
+        multiAzWithStandbyEnabled: false,
+      },
+      ebs: {
+        volumeSize: 10,
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // CloudFront Public Key configuration
+    let publicKeyString = 'MOCK_PUBLIC_KEY';
+    try {
+      publicKeyString = fs.readFileSync(path.join(__dirname, '../../public_key.pem'), 'utf8');
+    } catch (e) {
+      console.warn('public_key.pem not found, using placeholder');
+    }
+
+    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKey', {
+      encodedKey: publicKeyString,
+      publicKeyName: 'netflix-clone-public-key',
+    });
+
+    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroup', {
+      items: [publicKey],
+      keyGroupName: 'netflix-clone-key-group',
+    });
+
+    // CloudFront Distribution for streaming transcoded videos
+    const distribution = new cloudfront.Distribution(this, 'StreamingDistribution', {
+      defaultBehavior: {
+        origin: new origins.S3Origin(transcodedVideosBucket),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        trustedKeyGroups: [keyGroup],
+      },
+    });
+
+    // Secrets Manager Secret for storing private key (for Lambda CloudFront signer)
+    let privateKeyString = 'MOCK_PRIVATE_KEY';
+    try {
+      privateKeyString = fs.readFileSync(path.join(__dirname, '../../private_key.pem'), 'utf8');
+    } catch (e) {
+      console.warn('private_key.pem not found, using placeholder');
+    }
+
+    const privateKeySecret = new secretsmanager.Secret(this, 'CloudFrontPrivateKeySecret', {
+      secretName: 'NetflixCloneCloudFrontPrivateKey',
+      secretStringValue: cdk.SecretValue.unsafePlainText(privateKeyString),
+    });
+
     // Shared environment variables mapping table names
     const sharedEnv = {
       TABLE_MOVIES: moviesTable.tableName,
@@ -131,6 +191,10 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       TABLE_STREAM_SESSIONS: streamSessionsTable.tableName,
       BUCKET_RAW_VIDEOS: rawVideosBucket.bucketName,
       BUCKET_TRANSCODED_VIDEOS: transcodedVideosBucket.bucketName,
+      OPENSEARCH_ENDPOINT: searchDomain.domainEndpoint,
+      CLOUDFRONT_DOMAIN: distribution.distributionDomainName,
+      CLOUDFRONT_KEY_PAIR_ID: publicKey.publicKeyId,
+      CLOUDFRONT_PRIVATE_KEY_SECRET_ARN: privateKeySecret.secretArn,
     };
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +261,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantWriteData(createMovieFn);
     moviesTable.grantReadWriteData(updateMovieFn);
     moviesTable.grantWriteData(deleteMovieFn);
+    searchDomain.grantReadWrite(listMoviesFn);
 
     // Streaming
     moviesTable.grantReadData(createStreamSessionFn);
@@ -204,6 +269,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     streamSessionsTable.grantWriteData(createStreamSessionFn);
     streamSessionsTable.grantReadData(getStreamSessionFn);
     streamSessionsTable.grantReadWriteData(endStreamSessionFn);
+    privateKeySecret.grantRead(createStreamSessionFn);
 
     // User lists
     userListsTable.grantReadData(getUserListFn);
