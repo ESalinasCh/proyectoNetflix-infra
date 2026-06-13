@@ -453,6 +453,13 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       },
     });
 
+    // Cognito Hosted UI Domain (required for OAuth2/PKCE flows)
+    const userPoolDomain = userPool.addDomain('NetflixUserPoolDomain', {
+      cognitoDomain: {
+        domainPrefix: 'netflix-clone-estiven',
+      },
+    });
+
     const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'NetflixApiAuthorizer', {
       cognitoUserPools: [userPool],
       authorizerName: 'netflix-clone-authorizer',
