@@ -152,7 +152,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     });
 
     // Amazon OpenSearch Service Domain for text search
-    const searchDomain = new opensearch.Domain(this, 'SearchDomain', {
+    const searchDomain = new opensearch.Domain(this, 'SearchDomainV2', {
       version: opensearch.EngineVersion.OPENSEARCH_2_11,
       capacity: {
         dataNodeInstanceType: 't3.medium.search',
@@ -162,6 +162,18 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       ebs: {
         volumeSize: 10,
       },
+      encryptionAtRest: {
+        enabled: true,
+      },
+      nodeToNodeEncryption: true,
+      accessPolicies: [
+        new iam.PolicyStatement({
+          actions: ['es:*'],
+          effect: iam.Effect.ALLOW,
+          principals: [new iam.AccountRootPrincipal()],
+          resources: ['*'],
+        }),
+      ],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
