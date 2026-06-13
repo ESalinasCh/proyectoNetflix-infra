@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -29,6 +30,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       partitionKey: { name: 'movieId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     });
 
     moviesTable.addGlobalSecondaryIndex({
@@ -91,6 +93,29 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const streamSessionsTable = new dynamodb.Table(this, 'StreamSessionsTable', {
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
       timeToLiveAttribute: 'expiresAt',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Table: reviews (P2)
+    const reviewsTable = new dynamodb.Table(this, 'ReviewsTable', {
+      partitionKey: { name: 'movieId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'reviewId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    reviewsTable.addGlobalSecondaryIndex({
+      indexName: 'user-index',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Table: profiles (P2)
+    const profilesTable = new dynamodb.Table(this, 'ProfilesTable', {
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'profileId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -189,6 +214,8 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       TABLE_USER_LISTS: userListsTable.tableName,
       TABLE_WATCH_HISTORY: watchHistoryTable.tableName,
       TABLE_STREAM_SESSIONS: streamSessionsTable.tableName,
+      TABLE_REVIEWS: reviewsTable.tableName,
+      TABLE_PROFILES: profilesTable.tableName,
       BUCKET_RAW_VIDEOS: rawVideosBucket.bucketName,
       BUCKET_TRANSCODED_VIDEOS: transcodedVideosBucket.bucketName,
       OPENSEARCH_ENDPOINT: searchDomain.domainEndpoint,
@@ -246,6 +273,22 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const updateWatchProgressFn = createLambda('UpdateWatchProgressFn', 'user', 'updateWatchProgress');
     const deleteWatchHistoryFn = createLambda('DeleteWatchHistoryFn', 'user', 'deleteWatchHistory');
 
+    // OpenSearch sync (P2 - Tarea 2.1)
+    const syncToOpenSearchFn = createLambda('SyncToOpenSearchFn', 'catalog', 'syncToOpenSearch');
+
+    // Reviews microservice (P2 - Tarea 2.2)
+    const createReviewFn = createLambda('CreateReviewFn', 'catalog', 'createReview');
+    const listReviewsByMovieFn = createLambda('ListReviewsByMovieFn', 'catalog', 'listReviewsByMovie');
+    const deleteReviewFn = createLambda('DeleteReviewFn', 'catalog', 'deleteReview');
+
+    // Profiles microservice (P2 - Tarea 2.3)
+    const listProfilesFn = createLambda('ListProfilesFn', 'user', 'listProfiles');
+    const createProfileFn = createLambda('CreateProfileFn', 'user', 'createProfile');
+    const deleteProfileFn = createLambda('DeleteProfileFn', 'user', 'deleteProfile');
+
+    // Recommendations (P2 - Tarea 2.4)
+    const getRecommendationsFn = createLambda('GetRecommendationsFn', 'user', 'getRecommendations');
+
     // ─────────────────────────────────────────────────────────────────────────────
     // 3. IAM PERMISSIONS GRANTING
     // ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +303,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantReadData(getMovieFn);
     moviesTable.grantWriteData(createMovieFn);
     moviesTable.grantReadWriteData(updateMovieFn);
-    moviesTable.grantWriteData(deleteMovieFn);
+    moviesTable.grantReadWriteData(deleteMovieFn);
     searchDomain.grantReadWrite(listMoviesFn);
 
     // Streaming
@@ -282,6 +325,33 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantReadData(updateWatchProgressFn);
     watchHistoryTable.grantWriteData(updateWatchProgressFn);
     watchHistoryTable.grantReadWriteData(deleteWatchHistoryFn);
+
+    // OpenSearch sync (P2)
+    searchDomain.grantReadWrite(syncToOpenSearchFn);
+    syncToOpenSearchFn.addEventSource(
+      new lambdaEventSources.DynamoEventSource(moviesTable, {
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        batchSize: 10,
+        retryAttempts: 3,
+      })
+    );
+
+    // Reviews (P2)
+    reviewsTable.grantWriteData(createReviewFn);
+    moviesTable.grantReadWriteData(createReviewFn);
+    reviewsTable.grantReadData(listReviewsByMovieFn);
+    reviewsTable.grantReadWriteData(deleteReviewFn);
+    moviesTable.grantReadWriteData(deleteReviewFn);
+
+    // Profiles (P2)
+    profilesTable.grantReadData(listProfilesFn);
+    profilesTable.grantReadWriteData(createProfileFn);
+    profilesTable.grantReadWriteData(deleteProfileFn);
+
+    // Recommendations (P2)
+    watchHistoryTable.grantReadData(getRecommendationsFn);
+    moviesTable.grantReadData(getRecommendationsFn);
+    profilesTable.grantReadData(getRecommendationsFn);
 
     // VOD Ingestion Pipeline Permissions and Triggers
     rawVideosBucket.grantReadWrite(triggerTranscodeFn);
@@ -395,5 +465,25 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const userHistoryMovie = userHistory.addResource('{movieId}');
     userHistoryMovie.addMethod('PUT', new apigateway.LambdaIntegration(updateWatchProgressFn));
     userHistoryMovie.addMethod('DELETE', new apigateway.LambdaIntegration(deleteWatchHistoryFn));
+
+    // Resources: /v1/movies/{movieId}/reviews (P2)
+    const movieReviews = movie.addResource('reviews');
+    movieReviews.addMethod('POST', new apigateway.LambdaIntegration(createReviewFn));
+    movieReviews.addMethod('GET', new apigateway.LambdaIntegration(listReviewsByMovieFn));
+
+    const movieReview = movieReviews.addResource('{reviewId}');
+    movieReview.addMethod('DELETE', new apigateway.LambdaIntegration(deleteReviewFn));
+
+    // Resources: /v1/users/{userId}/profiles (P2)
+    const userProfiles = userResource.addResource('profiles');
+    userProfiles.addMethod('GET', new apigateway.LambdaIntegration(listProfilesFn));
+    userProfiles.addMethod('POST', new apigateway.LambdaIntegration(createProfileFn));
+
+    const userProfile = userProfiles.addResource('{profileId}');
+    userProfile.addMethod('DELETE', new apigateway.LambdaIntegration(deleteProfileFn));
+
+    // Resources: /v1/users/{userId}/profiles/{profileId}/recommendations (P2)
+    const profileRecommendations = userProfile.addResource('recommendations');
+    profileRecommendations.addMethod('GET', new apigateway.LambdaIntegration(getRecommendationsFn));
   }
 }
