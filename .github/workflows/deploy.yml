@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - master
 
 permissions:
   id-token: write
@@ -41,4 +42,18 @@ jobs:
 
       - name: Deploy CDK Stack
         run: |
-          npx cdk deploy --require-approval never
+          npx cdk deploy --all --require-approval never
+
+      - name: Install and Build Frontend App
+        run: |
+          cd app-code/frontend
+          npm install --registry=https://registry.npmjs.org/
+          npm run build
+
+      - name: Deploy Frontend to S3
+        run: |
+          aws s3 sync app-code/frontend/dist s3://netflix-web-952804383463-us-east-1 --delete
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id E23Y4F01FGJWQP --paths "/*"
