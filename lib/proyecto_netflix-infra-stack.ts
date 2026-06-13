@@ -186,14 +186,14 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       console.warn('public_key.pem not found, using placeholder');
     }
 
-    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKey', {
+    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKeyV2', {
       encodedKey: publicKeyString,
-      publicKeyName: 'netflix-clone-public-key',
+      publicKeyName: 'netflix-clone-public-key-v2',
     });
 
-    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroup', {
+    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroupV2', {
       items: [publicKey],
-      keyGroupName: 'netflix-clone-key-group',
+      keyGroupName: 'netflix-clone-key-group-v2',
     });
 
     // CloudFront Distribution for streaming transcoded videos
