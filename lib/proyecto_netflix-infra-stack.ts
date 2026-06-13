@@ -162,6 +162,18 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       ebs: {
         volumeSize: 10,
       },
+      encryptionAtRest: {
+        enabled: true,
+      },
+      nodeToNodeEncryption: true,
+      accessPolicies: [
+        new iam.PolicyStatement({
+          actions: ['es:*'],
+          effect: iam.Effect.ALLOW,
+          principals: [new iam.AnyPrincipal()],
+          resources: ['*'],
+        }),
+      ],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
