@@ -200,8 +200,9 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       defaultBehavior: {
         origin: new origins.S3Origin(transcodedVideosBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
         trustedKeyGroups: [keyGroup],
+        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.CORS_ALLOW_ALL_ORIGINS,
       },
     });
 
