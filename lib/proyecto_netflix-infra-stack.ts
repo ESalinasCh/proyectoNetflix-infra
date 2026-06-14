@@ -445,16 +445,25 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const userPoolClient = new cognito.UserPoolClient(this, 'NetflixUserPoolClient', {
       userPool: userPool,
       userPoolClientName: 'netflix-clone-spa-client',
+      generateSecret: false,
       authFlows: { userSrp: true },
       oAuth: {
         flows: { authorizationCodeGrant: true },
-        callbackUrls: ['http://localhost:5173', 'http://localhost:3000'],
-        logoutUrls: ['http://localhost:5173', 'http://localhost:3000'],
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: ['http://localhost:5173', 'http://localhost:3000', 'https://d33whrv9c8h9sn.cloudfront.net'],
+        logoutUrls: ['http://localhost:5173', 'http://localhost:3000', 'https://d33whrv9c8h9sn.cloudfront.net'],
       },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
     });
 
     // Cognito Hosted UI Domain (required for OAuth2/PKCE flows)
-    const userPoolDomain = userPool.addDomain('NetflixUserPoolDomain', {
+    userPool.addDomain('NetflixUserPoolDomain', {
       cognitoDomain: {
         domainPrefix: 'netflix-clone-estiven',
       },
