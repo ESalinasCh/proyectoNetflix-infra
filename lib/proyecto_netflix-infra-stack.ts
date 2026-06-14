@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 
 export class ProyectoNetflixInfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -185,14 +186,14 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       console.warn('public_key.pem not found, using placeholder');
     }
 
-    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKey', {
+    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKeyV2', {
       encodedKey: publicKeyString,
-      publicKeyName: 'netflix-clone-public-key',
+      publicKeyName: 'netflix-clone-public-key-v2',
     });
 
-    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroup', {
+    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroupV2', {
       items: [publicKey],
-      keyGroupName: 'netflix-clone-key-group',
+      keyGroupName: 'netflix-clone-key-group-v2',
     });
 
     // CloudFront Distribution for streaming transcoded videos
@@ -429,73 +430,132 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       },
     });
 
+    // Cognito User Pool & Client Setup (OIDC Auth Replacement)
+    const userPool = new cognito.UserPool(this, 'NetflixUserPool', {
+      userPoolName: 'netflix-clone-user-pool',
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const userPoolClient = new cognito.UserPoolClient(this, 'NetflixUserPoolClient', {
+      userPool: userPool,
+      userPoolClientName: 'netflix-clone-spa-client',
+      generateSecret: false,
+      authFlows: { userSrp: true },
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: ['http://localhost:5173', 'http://localhost:3000', 'https://d33whrv9c8h9sn.cloudfront.net'],
+        logoutUrls: ['http://localhost:5173', 'http://localhost:3000', 'https://d33whrv9c8h9sn.cloudfront.net'],
+      },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+    });
+
+    // Cognito Hosted UI Domain (required for OAuth2/PKCE flows)
+    userPool.addDomain('NetflixUserPoolDomain', {
+      cognitoDomain: {
+        domainPrefix: 'netflix-clone-edward',
+      },
+    });
+
+    const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'NetflixApiAuthorizer', {
+      cognitoUserPools: [userPool],
+      authorizerName: 'netflix-clone-authorizer',
+    });
+
+    const authOptions = {
+      authorizer: cognitoAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+
+    new cdk.CfnOutput(this, 'CognitoUserPoolId', {
+      value: userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+    });
+
+    new cdk.CfnOutput(this, 'CognitoUserPoolClientId', {
+      value: userPoolClient.userPoolClientId,
+      description: 'Cognito User Pool Client ID',
+    });
+
     const v1 = api.root.addResource('v1');
 
     // Resources: /v1/movies
     const movies = v1.addResource('movies');
-    movies.addMethod('GET', new apigateway.LambdaIntegration(listMoviesFn));
-    movies.addMethod('POST', new apigateway.LambdaIntegration(createMovieFn));
+    movies.addMethod('GET', new apigateway.LambdaIntegration(listMoviesFn), authOptions);
+    movies.addMethod('POST', new apigateway.LambdaIntegration(createMovieFn), authOptions);
 
     const movie = movies.addResource('{movieId}');
-    movie.addMethod('GET', new apigateway.LambdaIntegration(getMovieFn));
-    movie.addMethod('PUT', new apigateway.LambdaIntegration(updateMovieFn));
-    movie.addMethod('DELETE', new apigateway.LambdaIntegration(deleteMovieFn));
+    movie.addMethod('GET', new apigateway.LambdaIntegration(getMovieFn), authOptions);
+    movie.addMethod('PUT', new apigateway.LambdaIntegration(updateMovieFn), authOptions);
+    movie.addMethod('DELETE', new apigateway.LambdaIntegration(deleteMovieFn), authOptions);
 
     // Resources: /v1/genres
     const genres = v1.addResource('genres');
-    genres.addMethod('GET', new apigateway.LambdaIntegration(listGenresFn));
+    genres.addMethod('GET', new apigateway.LambdaIntegration(listGenresFn), authOptions);
 
     const genre = genres.addResource('{genreId}');
-    genre.addMethod('GET', new apigateway.LambdaIntegration(getGenreFn));
+    genre.addMethod('GET', new apigateway.LambdaIntegration(getGenreFn), authOptions);
 
     const genreMovies = genre.addResource('movies');
-    genreMovies.addMethod('GET', new apigateway.LambdaIntegration(listMoviesByGenreFn));
+    genreMovies.addMethod('GET', new apigateway.LambdaIntegration(listMoviesByGenreFn), authOptions);
 
     // Resources: /v1/streaming/sessions
     const streaming = v1.addResource('streaming');
     const sessions = streaming.addResource('sessions');
-    sessions.addMethod('POST', new apigateway.LambdaIntegration(createStreamSessionFn));
+    sessions.addMethod('POST', new apigateway.LambdaIntegration(createStreamSessionFn), authOptions);
 
     const session = sessions.addResource('{sessionId}');
-    session.addMethod('GET', new apigateway.LambdaIntegration(getStreamSessionFn));
-    session.addMethod('DELETE', new apigateway.LambdaIntegration(endStreamSessionFn));
+    session.addMethod('GET', new apigateway.LambdaIntegration(getStreamSessionFn), authOptions);
+    session.addMethod('DELETE', new apigateway.LambdaIntegration(endStreamSessionFn), authOptions);
 
     // Resources: /v1/users/{userId}
     const users = v1.addResource('users');
     const userResource = users.addResource('{userId}');
 
     const userLists = userResource.addResource('lists');
-    userLists.addMethod('GET', new apigateway.LambdaIntegration(getUserListFn));
-    userLists.addMethod('POST', new apigateway.LambdaIntegration(addToUserListFn));
+    userLists.addMethod('GET', new apigateway.LambdaIntegration(getUserListFn), authOptions);
+    userLists.addMethod('POST', new apigateway.LambdaIntegration(addToUserListFn), authOptions);
 
     const userListMovie = userLists.addResource('{movieId}');
-    userListMovie.addMethod('DELETE', new apigateway.LambdaIntegration(removeFromUserListFn));
+    userListMovie.addMethod('DELETE', new apigateway.LambdaIntegration(removeFromUserListFn), authOptions);
 
     const userHistory = userResource.addResource('history');
-    userHistory.addMethod('GET', new apigateway.LambdaIntegration(getWatchHistoryFn));
+    userHistory.addMethod('GET', new apigateway.LambdaIntegration(getWatchHistoryFn), authOptions);
 
     const userHistoryMovie = userHistory.addResource('{movieId}');
-    userHistoryMovie.addMethod('PUT', new apigateway.LambdaIntegration(updateWatchProgressFn));
-    userHistoryMovie.addMethod('DELETE', new apigateway.LambdaIntegration(deleteWatchHistoryFn));
+    userHistoryMovie.addMethod('PUT', new apigateway.LambdaIntegration(updateWatchProgressFn), authOptions);
+    userHistoryMovie.addMethod('DELETE', new apigateway.LambdaIntegration(deleteWatchHistoryFn), authOptions);
 
     // Resources: /v1/movies/{movieId}/reviews (P2)
     const movieReviews = movie.addResource('reviews');
-    movieReviews.addMethod('POST', new apigateway.LambdaIntegration(createReviewFn));
-    movieReviews.addMethod('GET', new apigateway.LambdaIntegration(listReviewsByMovieFn));
+    movieReviews.addMethod('POST', new apigateway.LambdaIntegration(createReviewFn), authOptions);
+    movieReviews.addMethod('GET', new apigateway.LambdaIntegration(listReviewsByMovieFn), authOptions);
 
     const movieReview = movieReviews.addResource('{reviewId}');
-    movieReview.addMethod('DELETE', new apigateway.LambdaIntegration(deleteReviewFn));
+    movieReview.addMethod('DELETE', new apigateway.LambdaIntegration(deleteReviewFn), authOptions);
 
     // Resources: /v1/users/{userId}/profiles (P2)
     const userProfiles = userResource.addResource('profiles');
-    userProfiles.addMethod('GET', new apigateway.LambdaIntegration(listProfilesFn));
-    userProfiles.addMethod('POST', new apigateway.LambdaIntegration(createProfileFn));
+    userProfiles.addMethod('GET', new apigateway.LambdaIntegration(listProfilesFn), authOptions);
+    userProfiles.addMethod('POST', new apigateway.LambdaIntegration(createProfileFn), authOptions);
 
     const userProfile = userProfiles.addResource('{profileId}');
-    userProfile.addMethod('DELETE', new apigateway.LambdaIntegration(deleteProfileFn));
+    userProfile.addMethod('DELETE', new apigateway.LambdaIntegration(deleteProfileFn), authOptions);
 
     // Resources: /v1/users/{userId}/profiles/{profileId}/recommendations (P2)
     const profileRecommendations = userProfile.addResource('recommendations');
-    profileRecommendations.addMethod('GET', new apigateway.LambdaIntegration(getRecommendationsFn));
+    profileRecommendations.addMethod('GET', new apigateway.LambdaIntegration(getRecommendationsFn), authOptions);
   }
 }
