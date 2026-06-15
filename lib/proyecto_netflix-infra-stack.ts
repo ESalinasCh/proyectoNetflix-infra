@@ -219,18 +219,14 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       },
     });
 
-    // Secrets Manager Secret for storing private key (for Lambda CloudFront signer)
-    let privateKeyString = 'MOCK_PRIVATE_KEY';
-    try {
-      privateKeyString = fs.readFileSync(path.join(__dirname, '../../private_key.pem'), 'utf8');
-    } catch (e) {
-      console.warn('private_key.pem not found, using placeholder');
-    }
-
-    const privateKeySecret = new secretsmanager.Secret(this, 'CloudFrontPrivateKeySecret', {
-      secretName: 'NetflixCloneCloudFrontPrivateKey',
-      secretStringValue: cdk.SecretValue.unsafePlainText(privateKeyString),
-    });
+    // Import the existing Secrets Manager Secret instead of recreating it from a local file.
+    // This prevents team members from accidentally overwriting the valid secret with corrupted
+    // or placeholder data if they don't have the original private_key.pem file locally.
+    const privateKeySecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'CloudFrontPrivateKeySecret',
+      'NetflixCloneCloudFrontPrivateKey'
+    );
 
     // Shared environment variables mapping table names
     const sharedEnv = {
