@@ -9,3 +9,5 @@ cdk.out
 
 # Local Lambda dependencies
 app-code/node_modules/
+
+.DS_Store

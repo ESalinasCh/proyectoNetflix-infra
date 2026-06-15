@@ -186,14 +186,26 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       console.warn('public_key.pem not found, using placeholder');
     }
 
-    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKeyV2', {
+    const publicKey = new cloudfront.PublicKey(this, 'CloudFrontPublicKeyV3', {
       encodedKey: publicKeyString,
-      publicKeyName: 'netflix-clone-public-key-v2',
+      publicKeyName: 'netflix-clone-public-key-v3',
     });
 
-    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroupV2', {
+    const keyGroup = new cloudfront.KeyGroup(this, 'CloudFrontKeyGroupV3', {
       items: [publicKey],
-      keyGroupName: 'netflix-clone-key-group-v2',
+      keyGroupName: 'netflix-clone-key-group-v3',
+    });
+
+    // CloudFront CORS Response Headers Policy — allows any origin on ALL responses (including 4xx/5xx)
+    const corsResponsePolicy = new cloudfront.ResponseHeadersPolicy(this, 'StreamingCorsPolicy', {
+      responseHeadersPolicyName: 'netflix-clone-streaming-cors',
+      corsBehavior: {
+        accessControlAllowCredentials: false,
+        accessControlAllowHeaders: ['*'],
+        accessControlAllowMethods: ['GET', 'HEAD', 'OPTIONS'],
+        accessControlAllowOrigins: ['*'],
+        originOverride: true,
+      },
     });
 
     // CloudFront Distribution for streaming transcoded videos
@@ -201,23 +213,20 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       defaultBehavior: {
         origin: new origins.S3Origin(transcodedVideosBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
         trustedKeyGroups: [keyGroup],
+        responseHeadersPolicy: corsResponsePolicy,
       },
     });
 
-    // Secrets Manager Secret for storing private key (for Lambda CloudFront signer)
-    let privateKeyString = 'MOCK_PRIVATE_KEY';
-    try {
-      privateKeyString = fs.readFileSync(path.join(__dirname, '../../private_key.pem'), 'utf8');
-    } catch (e) {
-      console.warn('private_key.pem not found, using placeholder');
-    }
-
-    const privateKeySecret = new secretsmanager.Secret(this, 'CloudFrontPrivateKeySecret', {
-      secretName: 'NetflixCloneCloudFrontPrivateKey',
-      secretStringValue: cdk.SecretValue.unsafePlainText(privateKeyString),
-    });
+    // Import the existing Secrets Manager Secret instead of recreating it from a local file.
+    // This prevents team members from accidentally overwriting the valid secret with corrupted
+    // or placeholder data if they don't have the original private_key.pem file locally.
+    const privateKeySecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'CloudFrontPrivateKeySecret',
+      'NetflixCloneCloudFrontPrivateKey'
+    );
 
     // Shared environment variables mapping table names
     const sharedEnv = {
@@ -439,6 +448,10 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       standardAttributes: {
         email: { required: true, mutable: true },
       },
+      // Atributo personalizado para el rol de administrador
+      customAttributes: {
+        'role': new cognito.StringAttribute({ mutable: true }),
+      },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -469,6 +482,60 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       },
     });
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // COGNITO USER POOL GROUPS (roles de administración)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    new cognito.CfnUserPoolGroup(this, 'SuperAdminGroup', {
+      userPoolId: userPool.userPoolId,
+      groupName: 'super_admin',
+      description: 'Super administradores con acceso total al catálogo',
+      precedence: 1,
+    });
+
+    new cognito.CfnUserPoolGroup(this, 'ContentAdminGroup', {
+      userPoolId: userPool.userPoolId,
+      groupName: 'content_admin',
+      description: 'Administradores de contenido con acceso de escritura al catálogo',
+      precedence: 2,
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // PRE TOKEN GENERATION TRIGGER
+    // Inyecta el claim custom:role en el ID token basado en el grupo del usuario
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const preTokenGenFn = new lambda.Function(this, 'PreTokenGenerationFn', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      functionName: 'netflix-clone-pre-token-generation',
+      description: 'Inyecta custom:role en el ID token de Cognito según el grupo del usuario',
+      code: lambda.Code.fromInline(`
+exports.handler = async (event) => {
+  const groups =
+    (event.request.groupConfiguration &&
+      event.request.groupConfiguration.groupsToOverride) || [];
+
+  let role;
+  if (groups.includes('super_admin')) {
+    role = 'super_admin';
+  } else if (groups.includes('content_admin')) {
+    role = 'content_admin';
+  }
+
+  event.response = {
+    claimsOverrideDetails: {
+      claimsToAddOrOverride: role ? { 'custom:role': role } : {},
+    },
+  };
+
+  return event;
+};
+      `),
+    });
+
+    userPool.addTrigger(cognito.UserPoolOperation.PRE_TOKEN_GENERATION, preTokenGenFn);
+
     const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'NetflixApiAuthorizer', {
       cognitoUserPools: [userPool],
       authorizerName: 'netflix-clone-authorizer',
@@ -487,6 +554,25 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CognitoUserPoolClientId', {
       value: userPoolClient.userPoolClientId,
       description: 'Cognito User Pool Client ID',
+    });
+
+    new cdk.CfnOutput(this, 'AdminUserCreationCommand', {
+      value: [
+        'Para crear un usuario administrador, ejecutar:',
+        `aws cognito-idp admin-create-user --user-pool-id ${userPool.userPoolId} --username admin@example.com --temporary-password "Admin1234!" --user-attributes Name=email,Value=admin@example.com Name=email_verified,Value=true`,
+        `aws cognito-idp admin-add-user-to-group --user-pool-id ${userPool.userPoolId} --username admin@example.com --group-name super_admin`,
+        `aws cognito-idp admin-set-user-password --user-pool-id ${userPool.userPoolId} --username admin@example.com --password "TuPasswordSegura1!" --permanent`,
+      ].join(' && '),
+      description: 'Comandos para crear un super_admin en Cognito',
+    });
+
+    new cdk.CfnOutput(this, 'ContentAdminUserCreationCommand', {
+      value: [
+        `aws cognito-idp admin-create-user --user-pool-id ${userPool.userPoolId} --username content@example.com --temporary-password "Admin1234!" --user-attributes Name=email,Value=content@example.com Name=email_verified,Value=true`,
+        `aws cognito-idp admin-add-user-to-group --user-pool-id ${userPool.userPoolId} --username content@example.com --group-name content_admin`,
+        `aws cognito-idp admin-set-user-password --user-pool-id ${userPool.userPoolId} --username content@example.com --password "TuPasswordSegura1!" --permanent`,
+      ].join(' && '),
+      description: 'Comandos para crear un content_admin en Cognito',
     });
 
     const v1 = api.root.addResource('v1');
