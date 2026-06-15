@@ -196,13 +196,26 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       keyGroupName: 'netflix-clone-key-group-v3',
     });
 
+    // CloudFront CORS Response Headers Policy — allows any origin on ALL responses (including 4xx/5xx)
+    const corsResponsePolicy = new cloudfront.ResponseHeadersPolicy(this, 'StreamingCorsPolicy', {
+      responseHeadersPolicyName: 'netflix-clone-streaming-cors',
+      corsBehavior: {
+        accessControlAllowCredentials: false,
+        accessControlAllowHeaders: ['*'],
+        accessControlAllowMethods: ['GET', 'HEAD', 'OPTIONS'],
+        accessControlAllowOrigins: ['*'],
+        originOverride: true,
+      },
+    });
+
     // CloudFront Distribution for streaming transcoded videos
     const distribution = new cloudfront.Distribution(this, 'StreamingDistribution', {
       defaultBehavior: {
         origin: new origins.S3Origin(transcodedVideosBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
         trustedKeyGroups: [keyGroup],
+        responseHeadersPolicy: corsResponsePolicy,
       },
     });
 
