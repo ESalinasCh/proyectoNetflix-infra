@@ -372,6 +372,30 @@ npx cdk bootstrap
 npx cdk deploy
 ```
 
+> 🔑 **Importante:** Para que CDK compile correctamente, debes tener una llave pública RSA (`public_key.pem`) en la raíz del proyecto. Esta se usa para proteger el contenido de video mediante CloudFront Signed URLs.
+
+---
+
+# 📥 Poblar la Base de Datos Inicial
+
+Una vez desplegada la infraestructura, debes inyectar contenido al catálogo para que la plataforma no esté vacía:
+
+```bash
+node upload_movies.js
+```
+*Este script subirá películas a DynamoDB y las encolará en los buckets de S3 para activar el flujo de transcodificación (o el Fallback automático si tu cuenta no tiene permisos sobre MediaConvert).*
+
+---
+
+# 🤖 Integración Continua (CI/CD)
+
+El proyecto incluye flujos de **GitHub Actions** (`deploy.yml`) que compilan y despliegan tanto la infraestructura como el frontend (React/Vite).
+
+Debido a las restricciones de las cuentas *AWS Academy / Sandbox* (que bloquean la asunción de roles OIDC), el pipeline requiere configurar los siguientes **GitHub Secrets**:
+* `AWS_ACCESS_KEY_ID`
+* `AWS_SECRET_ACCESS_KEY`
+* `AWS_REGION`
+
 Durante el despliegue, AWS CDK creará automáticamente:
 
 * tablas DynamoDB,
