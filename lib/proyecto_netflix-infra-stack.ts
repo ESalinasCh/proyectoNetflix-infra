@@ -181,7 +181,7 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     // CloudFront Public Key configuration
     let publicKeyString = 'MOCK_PUBLIC_KEY';
     try {
-      publicKeyString = fs.readFileSync(path.join(__dirname, '../../public_key.pem'), 'utf8');
+      publicKeyString = fs.readFileSync(path.join(__dirname, '../public_key.pem'), 'utf8');
     } catch (e) {
       console.warn('public_key.pem not found, using placeholder');
     }
