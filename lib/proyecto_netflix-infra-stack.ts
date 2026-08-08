@@ -127,6 +127,22 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Table: movie_embeddings — embeddings de la Item Tower del recomendador (IA, Free Tier)
+    // Cargada por ml/upload_artifacts.py (script local del equipo), no por una Lambda.
+    const movieEmbeddingsTable = new dynamodb.Table(this, 'MovieEmbeddingsTable', {
+      partitionKey: { name: 'movieId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Table: profile_embeddings — embedding por perfil (no por cuenta), calculado como el
+    // promedio ponderado de los embeddings de las películas vistas (ver getRecommendations.ts).
+    const profileEmbeddingsTable = new dynamodb.Table(this, 'ProfileEmbeddingsTable', {
+      partitionKey: { name: 'profileId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // S3 Buckets for video ingestion and streaming
     const rawVideosBucket = new s3.Bucket(this, 'RawVideosBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -150,6 +166,14 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
           allowedHeaders: ['*'],
         },
       ],
+    });
+
+    // S3 Bucket for the Two-Tower model artifacts (weights, exported for future retraining).
+    // Subido por ml/upload_artifacts.py (script local del equipo) - sin SageMaker, sin
+    // OpenSearch Serverless, sin Bedrock (Arquitectura de Referencia Free Tier, Sección 7.4).
+    const modelArtifactsBucket = new s3.Bucket(this, 'ModelArtifactsBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
     });
 
     // Amazon OpenSearch Service Domain for text search
@@ -238,8 +262,11 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
       TABLE_STREAM_SESSIONS: streamSessionsTable.tableName,
       TABLE_REVIEWS: reviewsTable.tableName,
       TABLE_PROFILES: profilesTable.tableName,
+      TABLE_MOVIE_EMBEDDINGS: movieEmbeddingsTable.tableName,
+      TABLE_PROFILE_EMBEDDINGS: profileEmbeddingsTable.tableName,
       BUCKET_RAW_VIDEOS: rawVideosBucket.bucketName,
       BUCKET_TRANSCODED_VIDEOS: transcodedVideosBucket.bucketName,
+      BUCKET_MODEL_ARTIFACTS: modelArtifactsBucket.bucketName,
       OPENSEARCH_ENDPOINT: searchDomain.domainEndpoint,
       CLOUDFRONT_DOMAIN: distribution.distributionDomainName,
       CLOUDFRONT_KEY_PAIR_ID: publicKey.publicKeyId,
@@ -370,10 +397,12 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     profilesTable.grantReadWriteData(createProfileFn);
     profilesTable.grantReadWriteData(deleteProfileFn);
 
-    // Recommendations (P2)
+    // Recommendations (P2 heuristica + IA Two-Tower, Fase 4 del plan de recomendaciones)
     watchHistoryTable.grantReadData(getRecommendationsFn);
     moviesTable.grantReadData(getRecommendationsFn);
     profilesTable.grantReadData(getRecommendationsFn);
+    movieEmbeddingsTable.grantReadData(getRecommendationsFn);
+    profileEmbeddingsTable.grantReadData(getRecommendationsFn); // se recalcula offline (ml/), la Lambda solo lee
 
     // VOD Ingestion Pipeline Permissions and Triggers
     rawVideosBucket.grantReadWrite(triggerTranscodeFn);
