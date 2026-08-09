@@ -151,6 +151,7 @@ La infraestructura expone una API REST mediante Amazon API Gateway.
 | ------ | ---------------------- |
 | GET    | `/v1/movies`           |
 | POST   | `/v1/movies`           |
+| POST   | `/v1/movies/import`    |
 | GET    | `/v1/movies/{movieId}` |
 | PUT    | `/v1/movies/{movieId}` |
 | DELETE | `/v1/movies/{movieId}` |
