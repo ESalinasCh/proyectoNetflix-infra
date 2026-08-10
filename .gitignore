@@ -22,3 +22,6 @@ app-code/node_modules/
 ml/artifacts/
 ml-20m/
 *.zip
+# Archivos de bloqueo temporales de Word (se crean al abrir un .docx y no
+# deben versionarse: son basura de sesion, no contenido).
+~$*
