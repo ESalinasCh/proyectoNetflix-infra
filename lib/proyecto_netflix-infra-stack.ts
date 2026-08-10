@@ -358,6 +358,35 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     // Recommendations (P2 - Tarea 2.4)
     const getRecommendationsFn = createLambda('GetRecommendationsFn', 'user', 'getRecommendations');
 
+    // Recomendaciones con el modelo Two-Tower entrenado en
+    // ml/notebooks/two_tower_movielens.ipynb (MovieLens 20M, TensorFlow/Keras).
+    // NodejsFunction inline en vez de createLambda: en el arranque en frío baja ~7 MB de
+    // vectores desde S3 y escanea MoviesTable para cruzar los ítems del modelo contra el
+    // catálogo, así que necesita más timeout que el default; y la memoria acá compra CPU
+    // para el producto punto contra las ~13k películas del modelo. Todo eso queda cacheado
+    // por contenedor: las invocaciones tibias solo hacen las queries a DynamoDB.
+    const twoTowerRecommendationsFn = new NodejsFunction(this, 'TwoTowerRecommendationsFn', {
+      entry: path.join(__dirname, '../app-code/src/user/getTwoTowerRecommendations.ts'),
+      projectRoot: path.join(__dirname, '../app-code'),
+      depsLockFilePath: path.join(__dirname, '../app-code/package-lock.json'),
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'handler',
+      // El prefijo tiene que coincidir con el destino del `aws s3 sync` del notebook.
+      // Para publicar un modelo nuevo: subir a two-tower/v2/ y cambiar estas dos variables.
+      environment: {
+        ...sharedEnv,
+        MODEL_ARTIFACT_PREFIX: 'two-tower/v1/',
+        MODEL_VERSION: 'v1',
+      },
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 1024,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        externalModules: ['@aws-sdk/*'],
+      },
+    });
+
     // ─────────────────────────────────────────────────────────────────────────────
     // 3. IAM PERMISSIONS GRANTING
     // ─────────────────────────────────────────────────────────────────────────────
@@ -425,6 +454,15 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     profilesTable.grantReadData(getRecommendationsFn);
     movieEmbeddingsTable.grantReadData(getRecommendationsFn);
     profileEmbeddingsTable.grantReadData(getRecommendationsFn); // se recalcula offline (ml/), la Lambda solo lee
+
+    // Recomendaciones Two-Tower. No usa MovieEmbeddingsTable/ProfileEmbeddingsTable: un solo
+    // blob de S3 leído una vez por contenedor sale más barato y más rápido que escanear miles
+    // de filas de DynamoDB en cada request, y el vector del perfil se calcula al vuelo desde
+    // el historial (así funciona también para perfiles nuevos, sin reentrenar ni precalcular).
+    modelArtifactsBucket.grantRead(twoTowerRecommendationsFn);
+    moviesTable.grantReadData(twoTowerRecommendationsFn);
+    watchHistoryTable.grantReadData(twoTowerRecommendationsFn);
+    profilesTable.grantReadData(twoTowerRecommendationsFn);
 
     // VOD Ingestion Pipeline Permissions and Triggers
     rawVideosBucket.grantReadWrite(triggerTranscodeFn);
@@ -626,6 +664,14 @@ exports.handler = async (event) => {
       description: 'Comandos para crear un content_admin en Cognito',
     });
 
+    // CloudFormation le pone un nombre autogenerado al bucket, y los artefactos del modelo se
+    // suben a mano (ver README, "Entrenar y publicar el modelo"). Sin este output habría que
+    // buscar el logical id con hash (ModelArtifactsBucket80ACAD84) para averiguar el nombre.
+    new cdk.CfnOutput(this, 'ModelArtifactsBucketName', {
+      value: modelArtifactsBucket.bucketName,
+      description: 'Bucket S3 donde viven los artefactos del modelo Two-Tower',
+    });
+
     const v1 = api.root.addResource('v1');
 
     // Resources: /v1/movies
@@ -699,5 +745,11 @@ exports.handler = async (event) => {
     // Resources: /v1/users/{userId}/profiles/{profileId}/recommendations (P2)
     const profileRecommendations = userProfile.addResource('recommendations');
     profileRecommendations.addMethod('GET', new apigateway.LambdaIntegration(getRecommendationsFn), authOptions);
+
+    // Variante IA del endpoint de arriba: mismo contrato de request, ranking del modelo
+    // Two-Tower. Se agrega al lado en vez de reemplazar la heurística, para poder comparar
+    // las dos en la demo.
+    const mlRecommendations = profileRecommendations.addResource('ml');
+    mlRecommendations.addMethod('GET', new apigateway.LambdaIntegration(twoTowerRecommendationsFn), authOptions);
   }
 }

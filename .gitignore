@@ -11,3 +11,14 @@ cdk.out
 app-code/node_modules/
 
 .DS_Store
+
+# Credentials — never commit
+.env
+.env.*
+!.env.example
+
+# Trained model artifacts: multi-MB float32 blobs, they live in S3, not git.
+# Regenerate with ml/notebooks/two_tower_movielens.ipynb.
+ml/artifacts/
+ml-20m/
+*.zip
