@@ -248,6 +248,52 @@ El prefijo `two-tower/v1/` es la variable de entorno `MODEL_ARTIFACT_PREFIX` de 
 publicar una versión nueva sin tocar la que está sirviendo: subir a `two-tower/v2/`, cambiar la
 variable y desplegar; el rollback es volver a apuntar el prefijo.
 
+## Implementación AI (Two‑Tower)
+
+Esta sección resume la funcionalidad adicional de IA para entrenamiento y despliegue del modelo
+Two‑Tower usado por el endpoint `/recommendations/ml` y cómo integrarlo en este repositorio.
+
+- **Código principal (entrenamiento):** `ml/notebooks/two_tower_movielens.ipynb` — notebook con
+  el pipeline completo: descarga de MovieLens 20M, preprocesado, definición del modelo Two‑Tower
+  en Keras 3, entrenamiento con softmax in‑batch, evaluación (recall@K, nDCG@K) y exportación de
+  artefactos (`item_vectors.f32`, `pool_embeddings.f32`, `query_tower.json`, `catalog.json`, `metrics.json`).
+- **Resumen técnico:** `ml/notebooks/two_tower_summary.md` y `ml/notebooks/two_tower_summary.docx`.
+
+- **Pasos rápidos para reproducir local/Colab:**
+  1. Abrir `ml/notebooks/two_tower_movielens.ipynb` en Google Colab (T4 recomendado) o ejecutar
+     las celdas localmente en un entorno con TensorFlow 2.11+/Keras 3.
+  2. Ejecutar todo el notebook; al final se crea `two_tower_artifacts.zip` en `ml/artifacts/`.
+  3. Extraer el ZIP en `ml/artifacts/` dentro del repo (estos archivos están en `.gitignore`).
+  4. Subir los artefactos al bucket del stack con el contenedor `toolbox` (ver sección anterior).
+
+- **Dónde está la inferencia en la app:** `app-code/src/user/getTwoTowerRecommendations.ts` — el
+  handler TypeScript que baja y cachea los artefactos desde S3 y transforma la consulta del
+  perfil a un vector (dos capas densas + producto punto). Revisar `ml/scripts/two-tower-local.ts`
+  para pruebas locales con los `.f32`.
+
+- **Recomendaciones prácticas:**
+  - Preparar un entorno con suficiente memoria al evaluar contra el catálogo completo (o usar
+    evaluación por chunks como en el notebook).
+  - Versionar artefactos por prefijo (`two-tower/v{N}/`) para permitir rollback seguro.
+  - Añadir metadata de entrenamiento en `metrics.json` (hiperparámetros, seed) para reproducibilidad.
+
+Si deseas, puedo: (a) añadir scripts de CI para entrenar/validar automáticamente en Colab/runner,
+ (b) crear un comando `Makefile`/NPM task que ejecute la conversión y subida de artefactos, o
+ (c) abrir una PR con estos cambios y el commit correspondiente.
+
+## Documentación completa del proyecto
+
+El documento completo del proyecto, incluyendo la propuesta académica y especificaciones, está
+disponible para consulta en: [Proyecto Netflix Clone con recomendacion de contenido utilizando AI .docx](Proyecto%20Netflix%20Clone%20con%20recomendacion%20de%20contenido%20utilizando%20AI%20.docx)
+
+**Documentación del entrenamiento y modelo:**
+
+Se ha añadido un resumen técnico de la implementación y evaluación del modelo en formato Markdown y
+DOCX en `ml/notebooks/two_tower_summary.md` y `ml/notebooks/two_tower_summary.docx` respectivamente.
+El notebook con la implementación está en `ml/notebooks/two_tower_movielens.ipynb`.
+Estos archivos describen el preprocesado, la arquitectura Two‑Tower, el protocolo de evaluación,
+la exportación de artefactos y las instrucciones para publicar el modelo.
+
 ## Cómo sirve la Lambda
 
 `app-code/src/user/getTwoTowerRecommendations.ts` (TypeScript, sin dependencias de ML: la
@@ -622,6 +668,7 @@ El proyecto implementa múltiples conceptos de computación en la nube:
 | Richard Berna | Co-author |
 | Jorge Siles | Co-author |
 | Estiven Salinas | Co-author |
+| Gabriel Chavez | Co-author |
 
 ---
 
