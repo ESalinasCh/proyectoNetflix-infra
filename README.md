@@ -191,6 +191,157 @@ La infraestructura expone una API REST mediante Amazon API Gateway.
 
 ---
 
+### 🤖 Recomendaciones
+
+| Método | Endpoint                                                     | Motor                     |
+| ------ | ------------------------------------------------------------ | ------------------------- |
+| GET    | `/v1/users/{userId}/profiles/{profileId}/recommendations`     | Heurística por género     |
+| GET    | `/v1/users/{userId}/profiles/{profileId}/recommendations/ml`  | Modelo Two-Tower (IA)     |
+
+---
+
+# 🧠 Recomendador Two-Tower
+
+El endpoint `/recommendations/ml` sirve un modelo de **recuperación Two-Tower** entrenado sobre
+**MovieLens 20M** con TensorFlow/Keras. Convive con el endpoint heurístico, que queda intacto,
+para poder comparar los dos en la demo.
+
+## Arquitectura
+
+Dos torres que comparten la tabla de embeddings de ítems:
+
+| Torre     | Entrada                          | Salida                                             |
+| --------- | -------------------------------- | -------------------------------------------------- |
+| **Item**  | índice de película               | `E[i] → Dense(128, relu) → Dense(64) → L2`          |
+| **Query** | historial (hasta 30 vistas)      | `mean(E[h]) → Dense(128, relu) → Dense(64) → L2`    |
+
+Puntuar es un producto punto entre las dos salidas. La torre de query **promedia el historial**
+en lugar de usar un embedding por `user_id`: así el modelo puntúa a cualquier perfil de la app
+con al menos una película vista, sin reentrenar ni precalcular nada por perfil.
+
+Entrenamiento con softmax muestreado in-batch (los negativos son los positivos de las otras
+filas del lote) más corrección logQ por popularidad. Evaluación con **recall@K** y **nDCG@K**
+(K = 10, 20, 50, 100) sobre un split *leave-one-out* cronológico, rankeando contra el catálogo
+completo, comparado contra un baseline de *most-popular*. Los números de la corrida quedan en
+`ml/artifacts/metrics.json`.
+
+## Entrenar y publicar el modelo
+
+1. Abrir `ml/notebooks/two_tower_movielens.ipynb` en **Google Colab gratis** (T4 recomendado) y
+   correr todas las celdas. Baja MovieLens 20M, entrena, imprime la tabla de métricas y deja
+   `two_tower_artifacts.zip` para descargar.
+2. Descomprimirlo en `ml/artifacts/` (ignorado por git: son blobs de varios MB, viven en S3).
+3. Subirlo desde el contenedor `toolbox`:
+
+```bash
+docker compose run --rm toolbox bash
+
+BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name ProyectoNetflixInfraStack \
+  --query "Stacks[0].Outputs[?OutputKey=='ModelArtifactsBucketName'].OutputValue" \
+  --output text)
+
+aws s3 sync ml/artifacts "s3://$BUCKET/two-tower/v1/"
+```
+
+El prefijo `two-tower/v1/` es la variable de entorno `MODEL_ARTIFACT_PREFIX` de la Lambda. Para
+publicar una versión nueva sin tocar la que está sirviendo: subir a `two-tower/v2/`, cambiar la
+variable y desplegar; el rollback es volver a apuntar el prefijo.
+
+## Cómo sirve la Lambda
+
+`app-code/src/user/getTwoTowerRecommendations.ts` (TypeScript, sin dependencias de ML: la
+inferencia son dos capas densas y un producto punto sobre `Float32Array`). En el arranque en
+frío baja los artefactos de S3 y los cachea por contenedor; las invocaciones tibias solo hacen
+las queries a DynamoDB.
+
+Los `movieId` de MovieLens y los del catálogo son espacios de ids distintos, así que en el
+mismo arranque en frío la Lambda escanea `MoviesTable` y cruza ambos por el par que escribe la
+importación: **`source: "movielens"` y `externalId` = el `movieId` de MovieLens** (el mismo id
+que `catalog.json` llama `mlMovieId`). El Scan filtra por `source` del lado del servidor, así
+que las filas de la otra fuente de catálogo no participan: solo las importadas desde MovieLens
+se recomiendan. El campo `coverage` de la respuesta lo hace visible:
+
+| Campo                   | Qué mide                                                       |
+| ----------------------- | -------------------------------------------------------------- |
+| `modelItems`            | Ítems que tiene el modelo                                       |
+| `catalogMatched`        | Cuántos de esos tienen película en el catálogo (recomendables)  |
+| `catalogMovieLensRows`  | Filas con `source: "movielens"` encontradas en `MoviesTable`    |
+| `historyRead`           | Entradas de historial leídas para el perfil                     |
+| `historyMatched`        | Cuántas de esas cruzaron contra el modelo                       |
+
+Si varias filas del catálogo comparten un mismo `externalId` (re-importaciones, duplicados),
+todas se reconocen al leer el historial, pero una sola es la que sale recomendada — se elige
+por `movieId` para que no dependa del orden del Scan.
+
+| Parámetro         | Default | Descripción                                          |
+| ----------------- | ------- | ---------------------------------------------------- |
+| `limit`           | `10`    | Cantidad de recomendaciones (máx. 50)                |
+| `readyOnly`       | `false` | Solo títulos con `videoStatus === "ready"`           |
+
+La respuesta trae `strategy`: `"two-tower"` cuando el historial del perfil cruza con el modelo,
+o `"popularity"` como fallback para perfiles nuevos.
+
+## Probarlo localmente (sin AWS)
+
+Tres niveles, de más rápido a más completo. Todo corre dentro del contenedor `toolbox`; hace
+falta haber descomprimido los artefactos en `ml/artifacts/`.
+
+**1. Tests unitarios** — no necesitan artefactos ni emulador:
+
+```bash
+docker compose exec toolbox sh -c 'cd /workspace/app-code && npx jest --runInBand'
+```
+
+`--runInBand` no es opcional: en paralelo los workers de jest se pasan de la memoria del
+contenedor y Docker los mata con SIGKILL (aparece como "test suite failed to run").
+
+**2. El modelo entrenado, contra los artefactos reales** (`ml/scripts/two-tower-local.ts`).
+Carga los `.f32` desde disco y los pasa por el mismo `buildQueryVector`/`topK` de la Lambda,
+con el puente modelo→catálogo en identidad. Sirve para ver si el entrenamiento quedó bien:
+
+```bash
+docker compose exec toolbox sh -c \
+  'cd /workspace/app-code && npm run -s two-tower:local -- "The Matrix" "Alien" --top 10'
+```
+
+Valida formas y normas L2 de los artefactos, imprime el recall@10 de `metrics.json` y compara
+el ranking del modelo contra el baseline de popularidad.
+
+**3. El handler completo, contra el emulador** (`ml/scripts/emulator.ts`). Acá corre el handler
+real: el `Scan` que arma el puente, el `GetObject` de los artefactos, el `Query` del historial
+por la GSI `recent-index` y el `BatchGet` del catálogo. Lo único distinto de producción es a
+dónde apuntan los SDKs (`AWS_ENDPOINT_URL`):
+
+```bash
+docker compose up -d aws-emulator
+
+docker compose exec \
+  -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_REGION=us-east-1 \
+  -e AWS_ENDPOINT_URL=http://aws-emulator:4566 -e AWS_S3_FORCE_PATH_STYLE=true \
+  toolbox sh -c 'cd /workspace/app-code && npm run -s emu:setup && npm run -s emu:invoke'
+```
+
+`emu:setup` crea las tablas y el bucket, sube los artefactos y siembra un catálogo que imita al
+de la app: los 3.000 ítems más populares del modelo escritos como filas de `MoviesTable` con
+`source: "movielens"` y `externalId` = el id de MovieLens — el mismo par que cruza el puente en
+producción. Siembra además dos controles: una fila de MovieLens con un `externalId` que el
+modelo nunca vio, y una fila de la otra fuente (sin `source`) cuyo título **sí** está en el
+modelo, que el filtro del Scan tiene que dejar afuera.
+
+`emu:invoke` arma el evento de API Gateway y llama al handler. Acepta argumentos sueltos:
+
+```bash
+npm run -s emu:invoke -- limit=5 readyOnly=true     # filtro por videoStatus
+npm run -s emu:invoke -- profileId=empty            # perfil sin historial -> fallback
+```
+
+`AWS_S3_FORCE_PATH_STYLE` existe solo para esto: el direccionamiento virtual-host de S3 arma
+`<bucket>.<host>`, que contra un contenedor no resuelve. En AWS la variable no está seteada y
+el cliente queda igual que siempre.
+
+---
+
 # 🔐 Seguridad y Permisos IAM
 
 La infraestructura aplica el principio de **mínimo privilegio** mediante AWS IAM.
