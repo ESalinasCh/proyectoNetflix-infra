@@ -31,6 +31,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      # El pipeline estuvo desplegando a una cuenta distinta a la del equipo, y
+      # el sintoma era un error de CloudFormation sin relacion aparente
+      # ("stack is in UPDATE_ROLLBACK_FAILED state"). Esto lo hace explicito.
+      - name: Verify AWS Account
+        env:
+          EXPECTED_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID || '952804383463' }}
+        run: |
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "Cuenta AWS de las credenciales: $ACTUAL_ACCOUNT"
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::Las credenciales apuntan a la cuenta $ACTUAL_ACCOUNT pero se esperaba $EXPECTED_ACCOUNT."
+            echo "Actualiza AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY en Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Install Backend App Dependencies
         run: |
           cd app-code
@@ -44,16 +59,44 @@ jobs:
         run: |
           npx cdk deploy --all --require-approval never
 
+      # Vite inyecta las VITE_* en tiempo de BUILD, no de runtime: sin ellas el
+      # bundle sale con los fallbacks del codigo (VITE_API_BASE_URL cae a
+      # 'https://api.netflix-clone.com/v1', que no existe) y el frontend
+      # desplegado no puede hablar ni con la API ni con Cognito.
+      #
+      # Van como `vars` y no como `secrets` a proposito: son valores publicos
+      # (quedan embebidos en el JS que descarga cualquier visitante), asi que
+      # tratarlos como secretos da una falsa sensacion de proteccion y ademas
+      # GitHub enmascara los secrets en los logs, lo que dificulta depurar.
+      # Configurar en: Settings > Secrets and variables > Actions > Variables.
       - name: Install and Build Frontend App
+        env:
+          VITE_COGNITO_DOMAIN: ${{ vars.VITE_COGNITO_DOMAIN }}
+          VITE_COGNITO_CLIENT_ID: ${{ vars.VITE_COGNITO_CLIENT_ID }}
+          VITE_COGNITO_REGION: ${{ vars.VITE_COGNITO_REGION }}
+          VITE_COGNITO_SCOPES: ${{ vars.VITE_COGNITO_SCOPES }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
         run: |
           cd app-code/frontend
+          # Falla temprano y con un mensaje claro: sin esto el build "pasa" y el
+          # error recien aparece en el navegador, como un 404 contra un dominio
+          # inexistente.
+          missing=""
+          for var in VITE_COGNITO_DOMAIN VITE_COGNITO_CLIENT_ID VITE_COGNITO_REGION VITE_API_BASE_URL; do
+            if [ -z "${!var}" ]; then missing="$missing $var"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Faltan variables de repositorio para el build del frontend:$missing"
+            echo "Configuralas en Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
           npm install --registry=https://registry.npmjs.org/
           npm run build
 
       - name: Deploy Frontend to S3
         run: |
-          aws s3 sync app-code/frontend/dist s3://netflix-web-952804383463-us-east-1 --delete
+          aws s3 sync app-code/frontend/dist "s3://${{ vars.FRONTEND_BUCKET || 'netflix-web-952804383463-us-east-1' }}" --delete
 
       - name: Invalidate CloudFront Cache
         run: |
-          aws cloudfront create-invalidation --distribution-id E23Y4F01FGJWQP --paths "/*"
+          aws cloudfront create-invalidation --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID || 'E23Y4F01FGJWQP' }}" --paths "/*"

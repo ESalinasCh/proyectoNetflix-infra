@@ -392,10 +392,41 @@ node upload_movies.js
 
 El proyecto incluye flujos de **GitHub Actions** (`deploy.yml`) que compilan y despliegan tanto la infraestructura como el frontend (React/Vite).
 
-Debido a las restricciones de las cuentas *AWS Academy / Sandbox* (que bloquean la asunción de roles OIDC), el pipeline requiere configurar los siguientes **GitHub Secrets**:
+Debido a las restricciones de las cuentas *AWS Academy / Sandbox* (que bloquean la asunción de roles OIDC), el pipeline requiere configurar los siguientes **GitHub Secrets** (*Settings → Secrets and variables → Actions → Secrets*):
 * `AWS_ACCESS_KEY_ID`
 * `AWS_SECRET_ACCESS_KEY`
 * `AWS_REGION`
+
+> ⚠️ Estas credenciales tienen que ser **de la misma cuenta AWS donde vive el stack** (la del bucket
+> `netflix-web-<accountId>-us-east-1` y la distribución de CloudFront). Si apuntan a otra cuenta, el
+> deploy falla con un error que no lo dice: `stack is in UPDATE_ROLLBACK_FAILED state` — porque
+> encuentra un stack homónimo, viejo, en la cuenta equivocada. El paso **Verify AWS Account** del
+> workflow ahora corta temprano con un mensaje explícito si eso ocurre.
+
+### Variables de repositorio (no secretos)
+
+El build del frontend necesita además estas **Variables** (*Settings → Secrets and variables →
+Actions → **Variables***, no Secrets):
+
+| Variable | Ejemplo | Requerida |
+|---|---|---|
+| `VITE_COGNITO_DOMAIN` | `netflix-clone-edward.auth.us-east-1.amazoncognito.com` | sí |
+| `VITE_COGNITO_CLIENT_ID` | `g3eijlmli1uo5n27637b7h94d` | sí |
+| `VITE_COGNITO_REGION` | `us-east-1` | sí |
+| `VITE_COGNITO_SCOPES` | `openid profile email` | no |
+| `VITE_API_BASE_URL` | `https://xxxx.execute-api.us-east-1.amazonaws.com/prod/v1` | sí |
+| `AWS_ACCOUNT_ID` | `952804383463` | no (default en el workflow) |
+| `FRONTEND_BUCKET` | `netflix-web-952804383463-us-east-1` | no (default en el workflow) |
+| `CLOUDFRONT_DISTRIBUTION_ID` | `E23Y4F01FGJWQP` | no (default en el workflow) |
+
+Van como **variables y no como secretos** a propósito: Vite las inyecta en tiempo de *build*, así que
+quedan embebidas en el JS que descarga cualquier visitante — no son secretas. Tratarlas como secretos
+da una falsa sensación de protección y encima GitHub las enmascara en los logs, lo que complica
+depurar. Los valores correctos son los mismos de `app-code/frontend/.env` (ver `.env.example`).
+
+Sin estas variables el build **no falla solo**: genera un bundle con los valores de respaldo del
+código (`VITE_API_BASE_URL` cae a `https://api.netflix-clone.com/v1`, que no existe) y el error recién
+aparece en el navegador. Por eso el workflow valida que estén presentes antes de compilar.
 
 Durante el despliegue, AWS CDK creará automáticamente:
 
