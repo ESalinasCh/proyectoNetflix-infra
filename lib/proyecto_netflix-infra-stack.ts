@@ -304,6 +304,26 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     const listMoviesFn = createLambda('ListMoviesFn', 'catalog', 'listMovies');
     const getMovieFn = createLambda('GetMovieFn', 'catalog', 'getMovie');
     const createMovieFn = createLambda('CreateMovieFn', 'catalog', 'createMovie');
+
+    // Ingesta de catálogo en bloque (Rol A). Timeout/memoria por encima del
+    // default: hasta 100 ítems por request, escritos en chunks de 25 en
+    // paralelo (ver src/catalog/importMovies.ts).
+    const importMoviesFn = new NodejsFunction(this, 'ImportMoviesFn', {
+      entry: path.join(__dirname, '../app-code/src/catalog/importMovies.ts'),
+      projectRoot: path.join(__dirname, '../app-code'),
+      depsLockFilePath: path.join(__dirname, '../app-code/package-lock.json'),
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'handler',
+      environment: sharedEnv,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        externalModules: ['@aws-sdk/*'],
+      },
+    });
+
     const updateMovieFn = createLambda('UpdateMovieFn', 'catalog', 'updateMovie');
     const deleteMovieFn = createLambda('DeleteMovieFn', 'catalog', 'deleteMovie');
 
@@ -351,6 +371,8 @@ export class ProyectoNetflixInfraStack extends cdk.Stack {
     moviesTable.grantReadData(listMoviesFn);
     moviesTable.grantReadData(getMovieFn);
     moviesTable.grantWriteData(createMovieFn);
+    moviesTable.grantReadWriteData(importMoviesFn);
+    genresTable.grantReadWriteData(importMoviesFn);
     moviesTable.grantReadWriteData(updateMovieFn);
     moviesTable.grantReadWriteData(deleteMovieFn);
     searchDomain.grantReadWrite(listMoviesFn);
@@ -610,6 +632,11 @@ exports.handler = async (event) => {
     const movies = v1.addResource('movies');
     movies.addMethod('GET', new apigateway.LambdaIntegration(listMoviesFn), authOptions);
     movies.addMethod('POST', new apigateway.LambdaIntegration(createMovieFn), authOptions);
+
+    // Resource: /v1/movies/import — hermano literal de /v1/movies/{movieId},
+    // resuelto por API Gateway antes que el path param (patrón estándar REST).
+    const moviesImport = movies.addResource('import');
+    moviesImport.addMethod('POST', new apigateway.LambdaIntegration(importMoviesFn), authOptions);
 
     const movie = movies.addResource('{movieId}');
     movie.addMethod('GET', new apigateway.LambdaIntegration(getMovieFn), authOptions);
